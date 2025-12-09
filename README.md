@@ -3,16 +3,18 @@ In this order:
 1:
 > create_hypercube.py
 
+2: 
 > create_training_spectra_mpi.py
+
 > run_create_training_spectra_mpi.sh
 
-2:
+3:
 > merge_results.py
 
-3:
+4:
 > cleaning_and_split_data.py
 
-4:
+5:
 > cp_NNtraining_opt.py
 
 
