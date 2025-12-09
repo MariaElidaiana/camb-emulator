@@ -3,6 +3,7 @@ In this order:
 >> create_hypercube.py
 
 >> create_training_spectra_mpi.py
+
 >> run_create_training_spectra_mpi.sh
 
 >> merge_results.py
