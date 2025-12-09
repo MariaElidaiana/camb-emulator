@@ -16,5 +16,5 @@ To test results:
 >> cp_NNtesting.py
 
 To test camb x classy:
-Pk_comp.py
+> Pk_comp.py
 
