@@ -1,0 +1,215 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+
+\title{Non-linear $P_{\rm nl}(k,z)$ emulators at $z\in[0,1]$ for DES
+halo-model pipelines (v3c-nl, 1M)}
+
+% TODO: fill in author/date before release
+\author{\texttt{TODO: author}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+The linear $P(k)$ emulators (v2c) reconstruct the redshift dependence
+at inference time through the growth factor, because
+$P_{\rm lin}(k,z)$ is separable as $D(z)^2 P_{\rm lin}(k,0)$. The
+non-linear spectrum is not separable in $z$: the \textsc{CAMB}
+halofit prescription introduces a $z$-dependence beyond the linear
+growth factor. This note describes the follow-up emulators of
+$P_{\rm nl}(k,z)$ directly, evaluated at the halofit nonlinear
+correction in a single \textsc{CAMB} call rather than through a
+separate boost emulator.
+
+As with v2c, two networks are trained:
+the total-matter non-linear power $P^{\rm mm}_{\rm nl}(k,z)$ (includes
+massive neutrinos) and the CDM+baryon non-linear power
+$P^{\rm cb}_{\rm nl}(k,z)$, the latter of which is consumed by
+\texttt{mf\_tinker} when \texttt{matter\_power\_lin\_version = 2}. Both
+take seven inputs -- the six cosmological parameters plus redshift $z$
+-- and predict $\log_{10} P_{\rm nl}(k,z)$ on a fixed 506-mode $k$-grid.
+
+\section{Training data and prior}
+\label{sec:data}
+
+\paragraph{Priors.} One million Latin-Hypercube cosmologies are drawn
+in physical-density coordinates $(\Omega_{\rm cdm} h^2, \Omega_b h^2)$,
+avoiding the unphysical $\Omega_b > \Omega_m$ corners that the v2c box
+suffered from. The derived $(\Omega_m, \Omega_b)$ are passed to the
+emulator so the input schema matches v2c. Sampling is in
+$\log(10^{10} A_s)$ (not $\sigma_8$) to keep a single \textsc{CAMB}
+call per sample. Three nested boxes are used, centred on the
+SPT-3G + DES Y3 + cluster joint posterior:
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{l l l l l l}
+    \toprule
+    Parameter & Central & $1\sigma$ & wide ($\pm20\sigma$) & dense ($\pm10\sigma$) & ultra ($\pm5\sigma$) \\
+    \midrule
+    $h_0$                   & 0.673   & 0.010  & 300k & \multicolumn{2}{c}{$N$ per box} \\
+    $\Omega_{\rm cdm} h^2$  & 0.1200  & 0.0025 & ---  & ---                 & --- \\
+    $\Omega_b h^2$          & 0.02230 & 0.00050& ---  & ---                 & --- \\
+    $n_s$                   & 0.963   & 0.007  & ---  & ---                 & --- \\
+    $\ln(10^{10} A_s)$      & 3.050   & 0.030  & ---  & ---                 & --- \\
+    $\sum m_\nu$ [eV]       & ---     & ---    & \multicolumn{3}{c}{[0.00, 0.20] uniform} \\
+    \midrule
+    Samples per box         & & & 300\,000 & 500\,000 & 200\,000 \\
+    (Derived $\Omega_m$)    & & & [0.11, 0.90] & [0.19, 0.52] & [0.24, 0.40] \\
+    \bottomrule
+  \end{tabular}
+  \caption{Three nested LHS boxes for the 1M non-linear dataset. The wide
+  box covers broad tails, the dense box the joint best-fit region, and the
+  ultra box the cluster-relevant core that drives the accuracy target.
+  $\Lambda$CDM is fixed ($w=-1$, $w_a=0$, $\Omega_k=0$) with three massive
+  neutrinos in a normal hierarchy and $N_{\rm eff}=3.046$.}
+  \label{tab:priors}
+\end{table}
+
+\paragraph{CAMB configuration.} Each cosmology is evaluated with the CSL
+CAMB interface using \texttt{nonlinear = pk} and
+\texttt{halofit\_version = takahashi} on a redshift grid
+$z \in [0, 1]$ with $n_z = 11$ equally spaced slices.
+\texttt{power\_spectra = delta\_tot\ delta\_nonu} returns both
+$P^{\rm mm}_{\rm nl}$ and $P^{\rm cb}_{\rm nl}$ in one call, evaluated
+on a log-spaced $k$-grid with $k_{\min} = 10^{-4}\,h/$Mpc,
+$k_{\max} = 50\,h/$Mpc, and $n_k = 506$ modes. Each $({\rm cosmology},
+z)$ pair is one row of 513 floats (seven parameters $+$ 506 $P(k)$
+values).
+
+\paragraph{Dataset.} The three boxes give $10^6$ cosmologies
+$\times\ 11$ z-slices $= 11 \times 10^6$ rows per spectrum. The combined
+dataset is shuffled (one shared permutation across the two spectra so
+row $i$ is the same $(\text{cosmology}, z)$ in both) and split 90/10 into
+$9.9 \times 10^6$ training and $1.1 \times 10^6$ test rows.
+
+\section{Emulator architecture and accuracy}
+\label{sec:results}
+
+Each emulator is a \textsc{CosmoPower} fully-connected network with four
+hidden layers of 512 units and custom sigmoid-based activations,
+mapping the seven-dimensional parameter vector to $\log_{10} P(k)$ on
+the 506-mode grid. Training uses a three-phase schedule of decreasing
+learning rate and increasing batch size:
+$(10^{-3}, 3\times10^{-4}, 10^{-4})$ and
+$(2\times10^{5}, 5\times10^{5}, 10^{6})$ respectively, for
+$(400, 800, 1200)$ maximum epochs with a patience of 30 epochs on the
+validation loss, and an 80/20 internal train/validation split. The two
+emulators share architecture but are trained independently.
+
+Accuracy is reported via the fractional residual
+\[
+  \epsilon(k,z) \equiv \frac{P_{\rm pred}(k,z)}{P_{\rm true}(k,z)} - 1,
+\]
+on every $(k, \text{cosmology}, z)$ point in the test set. The
+non-linear spectrum has sharper features (BAO wiggles, small-scale
+turnover) than the linear one, so the same data volume yields
+somewhat larger residuals than v2c.
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{l c c}
+    \toprule
+    Quantity                          & $P^{\rm mm}_{\rm nl}(k,z)$ & $P^{\rm cb}_{\rm nl}(k,z)$ \\
+    \midrule
+    Training rows                     & \multicolumn{2}{c}{$9.9 \times 10^6$} \\
+    Test rows                         & \multicolumn{2}{c}{$1.1 \times 10^6$} \\
+    RMSE $[\log_{10} P(k)]$           & 0.0007 & 0.0007 \\
+    Median $|\epsilon|$               & 0.0597\% & 0.0742\% \\
+    95th percentile $|\epsilon|$       & 0.2723\% & 0.3143\% \\
+    99th percentile $|\epsilon|$       & 0.4602\% & 0.5174\% \\
+    Fraction $|\epsilon| < 1\%$       & 99.89\% & 99.88\% \\
+    Fraction $|\epsilon| < 5\%$       & 100.0\% & 100.0\% \\
+    \bottomrule
+  \end{tabular}
+  \caption{Test-set accuracy on the $1.1 \times 10^6$ test rows.
+  $P^{\rm cb}_{\rm nl}$ trails $P^{\rm mm}_{\rm nl}$ slightly, matching
+  the v2c pattern.}
+  \label{tab:metrics}
+\end{table}
+
+Figure~\ref{fig:err_cdf} shows the cumulative distribution of
+$|\epsilon|$ across the test points. Figure~\ref{fig:err_vs_k} shows the
+$k$-dependence of the median and 95th percentile. Figure~\ref{fig:examples}
+compares emulated to true spectra at $z=0$ and $z=1$ for the lowest- and
+highest-$\Omega_m$ test cosmologies, isolating the redshift dependence
+that motivated the non-linear emulator.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.55\textwidth]{plots/err_cdf.pdf}
+  \caption{Cumulative distribution of $|\epsilon|$. Dotted line: 1\%;
+  dashed line: 5\%.}
+  \label{fig:err_cdf}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.55\textwidth]{plots/err_vs_k.pdf}
+  \caption{Median (solid) and 95th percentile (dashed) of $|\epsilon|$
+  as a function of $k$.}
+  \label{fig:err_vs_k}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{plots/examples.pdf}
+  \caption{Four test $(\text{cosmology}, z)$ points spanning the
+  $(z, \Omega_m)$ corners of the prior. Top: true (solid) and emulated
+  (dashed) $P_{\rm nl}(k,z)$ for both spectra. Bottom: fractional
+  residual $\epsilon = P_{\rm pred}/P_{\rm true} - 1$ in percent.}
+  \label{fig:examples}
+\end{figure}
+
+\section{Compute pipeline}
+\label{sec:compute}
+
+The 1M-sample CAMB generation runs as SLURM task arrays on the
+\texttt{shared} qos. As for v2c, the shared cosmosis environment's
+\texttt{mpi4py} is not Cray-MPICH-linked, so we use serial task arrays
+rather than \texttt{cosmosis --mpi}; each task processes 1000 samples
+($1000 \times 11$ z-slices $= 11000$ rows) and writes to a distinct
+\texttt{slice\{ID\}\{box\}\_} prefix to avoid Lustre write races.
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{l l l l l l}
+    \toprule
+    Step & QoS & CPU/task & Array & Wall/task & Notes \\
+    \midrule
+    wide CAMB   & shared & 1 & 0--299, \%50 & $\sim 3$--4.5 h & $300 \times 1000$ \\
+    dense CAMB  & shared & 1 & 0--499, \%50 & $\sim 3$--4.5 h & $500 \times 1000$ \\
+    ultra CAMB  & shared & 1 & 0--199, \%50 & $\sim 3$--4.5 h & $200 \times 1000$ \\
+    merge/split & node   & 1 & ---          & $\sim 30$--60 min & streaming, 170 GB \\
+    clean       & shared & 16 & ---         & $\sim 1$--2 h       & chunked reader, 128 GB \\
+    training    & regular (A100) & 32 & --- & $\sim 4$--8 h each & LARGE batch schedule \\
+    \bottomrule
+  \end{tabular}
+  \caption{SLURM layout of the 1M non-linear pipeline. Total CAMB cost
+  dominates at $\sim 1500$--$2000$ CPU-hours on \texttt{shared} ($1\times$
+  charge). Training is two A100-80GB jobs of $\sim 4$--$8$ h each
+  (11M rows move the schedule into the LARGE batch regime).}
+  \label{tab:compute}
+\end{table}
+
+\section{Downstream integration}
+\label{sec:next}
+
+The non-linear spectra feed the same downstream contracts as the linear
+ones: \texttt{mf\_tinker} with \texttt{matter\_power\_lin\_version = 2}
+reads \texttt{cdm\_baryon\_power\_lin} (the \texttt{linear\_nonu}
+emulator); the nonlinear counterpart \texttt{cdm\_baryon\_power\_nl} is
+provided here. The numpy-only inference wrapper \texttt{cp\_numpy.py}
+already accepts $z$ as a parameter (via \texttt{predictions\_np\_at\_z}),
+so the CosmoSIS \texttt{cp\_camb} module can evaluate the non-linear
+spectrum at any sampled redshift without TensorFlow.
+
+\end{document}

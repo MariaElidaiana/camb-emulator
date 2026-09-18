@@ -29,15 +29,29 @@ parser.add_argument("--nsamples", type=int, default=0,
 parser.add_argument("--spectra", type=str, default="linear_v2",
                     choices=["linear_v2", "linear_nonu_v2",
                              "linear_v2c", "linear_nonu_v2c",
-                             "linear_v3c", "linear_nonu_v3c"],
+                             "linear_v3c", "linear_nonu_v3c",
+                             "linear_nl_v2", "linear_nonu_nl_v2",
+                             "linear_nl_v3c", "linear_nonu_nl_v3c"],
                     help="Spectra type (default: linear_v2)")
 parser.add_argument("--data-dir", type=str, default=None,
                     help="Override DATA_DIR (default: ./training_data_v2 "
-                         "for *_v2, ./training_data_v2c for *_v2c)")
+                         "for *_v2, ./training_data_v2c for *_v2c, "
+                         "./training_data_v3c for *_v3c, "
+                         "./training_data_nl_v2 for *_nl_v2, "
+                         "./training_data_nl_v3c for *_nl_v3c)")
+parser.add_argument("--max-epochs", type=str, default=None,
+                    help="Override max-epochs schedule as 'e1,e2,e3'. "
+                         "Useful for short debug runs that can't fit the "
+                         "default 400/800/1200 schedule in the wall-time "
+                         "cap (e.g. '--max-epochs 50,100,150').")
 args = parser.parse_args()
 
 if args.data_dir is not None:
     DATA_DIR = args.data_dir
+elif args.spectra.endswith("_nl_v3c"):
+    DATA_DIR = "./training_data_nl_v3c"
+elif args.spectra.endswith("_nl_v2"):
+    DATA_DIR = "./training_data_nl_v2"
 elif args.spectra.endswith("_v3c"):
     DATA_DIR = "./training_data_v3c"
 elif args.spectra.endswith("_v2c"):
@@ -47,7 +61,13 @@ else:
 SPECTRA_TYPE = args.spectra
 MODEL_NAME = f"camb_{SPECTRA_TYPE}_emulator"
 
-MODEL_PARAMETERS = ['h0', 'omega_m', 'omega_b', 'n_s', 'log1e10As', 'mnu']
+BASE_PARAMETERS = ['h0', 'omega_m', 'omega_b', 'n_s', 'log1e10As', 'mnu']
+# "_nl_" marks z-aware nonlinear emulators (both _nl_v2 and _nl_v3c).
+NL_VARIANT = "_nl_" in args.spectra
+if NL_VARIANT:
+    MODEL_PARAMETERS = BASE_PARAMETERS + ['z']
+else:
+    MODEL_PARAMETERS = BASE_PARAMETERS
 
 HIDDEN_LAYERS = [512, 512, 512, 512]
 
@@ -131,6 +151,16 @@ print(f"\nInitializing CosmoPower NN...")
 print(f"  Parameters: {MODEL_PARAMETERS}")
 print(f"  Hidden layers: {HIDDEN_LAYERS}")
 print(f"  Training samples: {n_total:,}")
+
+if args.max_epochs is not None:
+    max_epochs_override = [int(s) for s in args.max_epochs.split(",")]
+    if len(max_epochs_override) != len(MAX_EPOCHS):
+        raise SystemExit(
+            f"--max-epochs must have {len(MAX_EPOCHS)} entries "
+            f"(got {len(max_epochs_override)} from '{args.max_epochs}')"
+        )
+    MAX_EPOCHS = max_epochs_override
+    print(f"  Override MAX_EPOCHS -> {MAX_EPOCHS} (debug schedule)")
 
 checkpoint_file = MODEL_NAME
 
